@@ -201,7 +201,6 @@ void generatePacket(const AppleDevice& device, uint8_t* buffer, size_t& outLengt
 
 BLEAdvertising *pAdvertising;  // global variable
 BLEServer *pServer;
-uint32_t delayMilliseconds = 50;  // Reduced from 100 for faster broadcasts
 
 int currentMode = 0;
 bool isAdvertising = false;
@@ -210,7 +209,11 @@ Preferences preferences;
 // Button debounce
 unsigned long lastButtonTime = 0;
 const unsigned long DEBOUNCE_DELAY = 200;
-unsigned long lastBroadcastTime = 0;
+
+// Für Random Device Mode
+int currentRandomIndex = 0;
+unsigned long lastRandomSwitch = 0;
+const unsigned long RANDOM_SWITCH_INTERVAL = 2000; // 2 Sekunden
 
 // ============= OLED DISPLAY FUNCTIONS =============
 void initDisplay() {
@@ -254,15 +257,12 @@ void updateDisplay() {
     display.println("Status: Stopped");
   }
   
-  // LED indicators
+  // Current device (if random)
   display.setCursor(0, 50);
-  display.print("LEDs: ");
-  if (stateTable[currentMode][0] == ON) display.print("L ");
-  else if (stateTable[currentMode][0] == FLASH) display.print("L* ");
-  else display.print("   ");
-  
-  if (stateTable[currentMode][1] == ON) display.print("R");
-  else if (stateTable[currentMode][1] == FLASH) display.print("R*");
+  if (currentMode == 1) {
+    display.print("Device: ");
+    display.println(ALL_DEVICES[currentRandomIndex].name);
+  }
   
   display.display();
 }
@@ -303,6 +303,7 @@ void handleButtons() {
     if (isAdvertising) {
       pAdvertising->start();
       Serial.println("BLE Advertising STARTED");
+      lastRandomSwitch = millis();
     } else {
       pAdvertising->stop();
       Serial.println("BLE Advertising STOPPED");
@@ -338,7 +339,6 @@ void setup() {
   
   // Set TX power
   esp_ble_tx_power_set(ESP_BLE_PWR_TYPE_ADV, MAX_TX_POWER);
-  esp_ble_tx_power_set(ESP_BLE_PWR_TYPE_CONN, MAX_TX_POWER);
   Serial.println("TX Power set to MAX");
 
   // Create the BLE Server
@@ -375,22 +375,7 @@ void setAdvertisementData(BLEAdvertisementData &oAdvertisementData, const AppleD
   #endif
 }
 
-void setRandomDeviceData(BLEAdvertisementData &oAdvertisementData) {
-  int idx = random(0, sizeof(ALL_DEVICES) / sizeof(ALL_DEVICES[0]));
-  AppleDevice dev = ALL_DEVICES[idx];
-  setAdvertisementData(oAdvertisementData, dev);
-}
-
-void loop() {
-  // Handle button input
-  handleButtons();
-  
-  // If not advertising, just wait
-  if (!isAdvertising) {
-    delay(50);
-    return;
-  }
-
+void broadcastPacket(const AppleDevice& device) {
   // Generate fake random MAC
   esp_bd_addr_t dummy_addr = {0x00, 0x00, 0x00, 0x00, 0x00, 0x00};
   for (int i = 0; i < 6; i++){
@@ -401,39 +386,7 @@ void loop() {
   }
 
   BLEAdvertisementData oAdvertisementData = BLEAdvertisementData();
-
-  switch (currentMode){
-    case LEFT_OFF_RIGHT_OFF:
-      setAdvertisementData(oAdvertisementData, ALL_DEVICES[(int)DeviceIndex::AIRPODS]);
-      break;
-    case LEFT_OFF_RIGHT_FLASH:
-      setRandomDeviceData(oAdvertisementData);
-      break;
-    case LEFT_OFF_RIGHT_ON:
-      setAdvertisementData(oAdvertisementData, ALL_DEVICES[(int)DeviceIndex::SOFTWARE_UPDATE]);
-      break;
-    case LEFT_FLASH_RIGHT_OFF:
-      setAdvertisementData(oAdvertisementData, ALL_DEVICES[(int)DeviceIndex::AIRPODS_GEN_2]);
-      break;
-    case LEFT_FLASH_RIGHT_FLASH:
-      setAdvertisementData(oAdvertisementData, ALL_DEVICES[(int)DeviceIndex::VISION_PRO]);
-      break;
-    case LEFT_FLASH_RIGHT_ON:
-      setAdvertisementData(oAdvertisementData, ALL_DEVICES[(int)DeviceIndex::AIRPODS_MAX]);
-      break;
-    case LEFT_ON_RIGHT_OFF:
-      setAdvertisementData(oAdvertisementData, ALL_DEVICES[(int)DeviceIndex::APPLETV_SETUP]);
-      break;
-    case LEFT_ON_RIGHT_FLASH:
-      setAdvertisementData(oAdvertisementData, ALL_DEVICES[(int)DeviceIndex::TRANSFER_NUMBER]);
-      break;
-    case LEFT_ON_RIGHT_ON:
-      setAdvertisementData(oAdvertisementData, ALL_DEVICES[(int)DeviceIndex::APPLETV_PAIR]);
-      break;
-    default:
-      setAdvertisementData(oAdvertisementData, ALL_DEVICES[(int)DeviceIndex::HOMEPOD_SETUP]);
-      break;
-  }
+  setAdvertisementData(oAdvertisementData, device);
 
   int adv_type_choice = random(3);
   if (adv_type_choice == 0){
@@ -462,5 +415,63 @@ void loop() {
       esp_ble_tx_power_set(ESP_BLE_PWR_TYPE_ADV, (esp_power_level_t)(MAX_TX_POWER - 4));
   }
   
-  delay(delayMilliseconds);
+  delay(200); // Kurze Pause zwischen Packets
+}
+
+void loop() {
+  // Handle button input
+  handleButtons();
+  
+  // If not advertising, just wait
+  if (!isAdvertising) {
+    delay(50);
+    return;
+  }
+
+  unsigned long currentTime = millis();
+
+  // Für Mode 1 (Random Device) - wechsle alle 2 Sekunden das Gerät
+  if (currentMode == 1) {
+    if (currentTime - lastRandomSwitch >= RANDOM_SWITCH_INTERVAL) {
+      currentRandomIndex = (currentRandomIndex + 1) % (sizeof(ALL_DEVICES) / sizeof(ALL_DEVICES[0]));
+      lastRandomSwitch = currentTime;
+      updateDisplay();
+      Serial.printf("Switched to device: %s\n", ALL_DEVICES[currentRandomIndex].name);
+    }
+    
+    // Broadcast aktuelles gerät
+    broadcastPacket(ALL_DEVICES[currentRandomIndex]);
+  }
+  else {
+    // Für alle anderen Modi - wie vorher
+    switch (currentMode){
+      case LEFT_OFF_RIGHT_OFF:
+        broadcastPacket(ALL_DEVICES[(int)DeviceIndex::AIRPODS]);
+        break;
+      case LEFT_OFF_RIGHT_ON:
+        broadcastPacket(ALL_DEVICES[(int)DeviceIndex::SOFTWARE_UPDATE]);
+        break;
+      case LEFT_FLASH_RIGHT_OFF:
+        broadcastPacket(ALL_DEVICES[(int)DeviceIndex::AIRPODS_GEN_2]);
+        break;
+      case LEFT_FLASH_RIGHT_FLASH:
+        broadcastPacket(ALL_DEVICES[(int)DeviceIndex::VISION_PRO]);
+        break;
+      case LEFT_FLASH_RIGHT_ON:
+        broadcastPacket(ALL_DEVICES[(int)DeviceIndex::AIRPODS_MAX]);
+        break;
+      case LEFT_ON_RIGHT_OFF:
+        broadcastPacket(ALL_DEVICES[(int)DeviceIndex::APPLETV_SETUP]);
+        break;
+      case LEFT_ON_RIGHT_FLASH:
+        broadcastPacket(ALL_DEVICES[(int)DeviceIndex::TRANSFER_NUMBER]);
+        break;
+      case LEFT_ON_RIGHT_ON:
+        broadcastPacket(ALL_DEVICES[(int)DeviceIndex::APPLETV_PAIR]);
+        break;
+      default:
+        broadcastPacket(ALL_DEVICES[(int)DeviceIndex::HOMEPOD_SETUP]);
+        break;
+    }
+  }
 }
