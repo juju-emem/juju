@@ -2,6 +2,15 @@
 // Based on the previous work of chipik / _hexway / ECTO-1A & SAY-10
 // See the README for more info
 
+#include <Arduino.h>
+#include <cstdint>
+#include <cstring>
+#include <BLEDevice.h>
+#include <BLEUtils.h>
+#include <BLEServer.h>
+#include <Preferences.h>
+#include <esp_arduino_version.h>
+
 // ============= LED.HPP =============
 enum LEDMode { OFF = 0, FLASH = 1, ON = 2 };
 
@@ -38,7 +47,7 @@ struct AppleDevice {
   PacketType type;
 };
 
-enum DeviceIndex : uint8_t {
+enum class DeviceIndex : uint8_t {
   // Audio (31 bytes, ID at index 7)
   AIRPODS = 0,
   POWER_BEATS,
@@ -150,14 +159,7 @@ void generatePacket(const AppleDevice& device, uint8_t* buffer, size_t& outLengt
   }
 }
 
-// ============= MAIN SKETCH =============
-#include <Arduino.h>
-#include <BLEDevice.h>
-#include <BLEUtils.h>
-#include <BLEServer.h>
-#include <Preferences.h>
-#include <esp_arduino_version.h>
-
+// ============= BLUETOOTH CONFIGURATION =============
 // Bluetooth maximum transmit power
 #if defined(CONFIG_IDF_TARGET_ESP32C3) || defined(CONFIG_IDF_TARGET_ESP32C2) || defined(CONFIG_IDF_TARGET_ESP32S3)
 #define MAX_TX_POWER ESP_PWR_LVL_P21  // ESP32C3 ESP32C2 ESP32S3
@@ -302,34 +304,34 @@ void loop() {
 
   switch (currentMode){
     case LEFT_OFF_RIGHT_OFF:
-      setAdvertisementData(oAdvertisementData, ALL_DEVICES[AIRPODS]); // This one seems the most spammy
+      setAdvertisementData(oAdvertisementData, ALL_DEVICES[(int)DeviceIndex::AIRPODS]); // This one seems the most spammy
       break;
     case LEFT_OFF_RIGHT_FLASH:
     setRandomDeviceData(oAdvertisementData);
       break;
     case LEFT_OFF_RIGHT_ON:
-      setAdvertisementData(oAdvertisementData, ALL_DEVICES[SOFTWARE_UPDATE]); // This is fairly spammy, not all phones
+      setAdvertisementData(oAdvertisementData, ALL_DEVICES[(int)DeviceIndex::SOFTWARE_UPDATE]); // This is fairly spammy, not all phones
       break;
     case LEFT_FLASH_RIGHT_OFF:
-      setAdvertisementData(oAdvertisementData, ALL_DEVICES[AIRPODS_GEN_2]); // TBD
+      setAdvertisementData(oAdvertisementData, ALL_DEVICES[(int)DeviceIndex::AIRPODS_GEN_2]); // TBD
       break;
     case LEFT_FLASH_RIGHT_FLASH:
-    setAdvertisementData(oAdvertisementData, ALL_DEVICES[VISION_PRO]); // THis one affects very few devices, not as spammy (but kinda fun)
+    setAdvertisementData(oAdvertisementData, ALL_DEVICES[(int)DeviceIndex::VISION_PRO]); // THis one affects very few devices, not as spammy (but kinda fun)
       break;
     case LEFT_FLASH_RIGHT_ON:
-      setAdvertisementData(oAdvertisementData, ALL_DEVICES[AIRPODS_MAX]); // TBD
+      setAdvertisementData(oAdvertisementData, ALL_DEVICES[(int)DeviceIndex::AIRPODS_MAX]); // TBD
       break;
     case LEFT_ON_RIGHT_OFF:
-      setAdvertisementData(oAdvertisementData, ALL_DEVICES[APPLETV_SETUP]); // TBD
+      setAdvertisementData(oAdvertisementData, ALL_DEVICES[(int)DeviceIndex::APPLETV_SETUP]); // TBD
       break;
     case LEFT_ON_RIGHT_FLASH:
-      setAdvertisementData(oAdvertisementData, ALL_DEVICES[TRANSFER_NUMBER]); // TBD
+      setAdvertisementData(oAdvertisementData, ALL_DEVICES[(int)DeviceIndex::TRANSFER_NUMBER]); // TBD
       break;
     case LEFT_ON_RIGHT_ON:
-      setAdvertisementData(oAdvertisementData, ALL_DEVICES[APPLETV_PAIR]); // TBD
+      setAdvertisementData(oAdvertisementData, ALL_DEVICES[(int)DeviceIndex::APPLETV_PAIR]); // TBD
       break;
     default:
-      setAdvertisementData(oAdvertisementData, ALL_DEVICES[HOMEPOD_SETUP]); // TBD
+      setAdvertisementData(oAdvertisementData, ALL_DEVICES[(int)DeviceIndex::HOMEPOD_SETUP]); // TBD
       break;
   }
 
